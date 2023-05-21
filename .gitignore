@@ -1,10 +1,13 @@
 node_modules
 .idea
 dist
+shared/lib
+mui-grid-form/lib
 #produced by running
 counters.yaml
 *.log*
 self.*
 config.yaml
+custom.html
 accounts.yaml
-shared/lib
+.DS_Store

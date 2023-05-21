@@ -1,93 +1,27 @@
-import { createElement as h, FC, isValidElement } from "react"
-import { apiCall, useApiComp, useApiList } from './api'
-import { DataGrid } from '@mui/x-data-grid'
-import { Alert } from '@mui/material'
-import { IconBtn } from './misc'
-import { PowerSettingsNew, Settings } from '@mui/icons-material'
-import { alertDialog, formDialog } from './dialog'
-import { BoolField, MultiSelectField, NumberField, SelectField, StringField } from './Form'
+// This file is part of HFS - Copyright 2021-2023, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
 
-const PLUGINS_CONFIG = 'plugins_config'
+import { createElement as h, Fragment, useState } from "react"
+import { Tab, Tabs } from '@mui/material'
+import InstalledPlugins from "./InstalledPlugins"
+import OnlinePlugins from "./OnlinePlugins"
+
+const TABS = {
+    "Installed": InstalledPlugins,
+    "Search online": OnlinePlugins,
+    "Check updates": () => h(InstalledPlugins, { updates: true }),
+}
+const LABELS = Object.keys(TABS)
+const PANES = Object.values(TABS)
 
 export default function PluginsPage() {
-    const { list, error, initializing } = useApiList('get_plugins')
-    const [cfgRes, reloadCfg] = useApiComp('get_config', { only: [PLUGINS_CONFIG] })
-    if (isValidElement(cfgRes))
-        return cfgRes
-    if (error)
-        return h(Alert, { severity: 'error' }, error)
-    const cfg = cfgRes[PLUGINS_CONFIG]
-    return h(DataGrid, {
-        rows: list,
-        loading: initializing,
-        disableColumnSelector: true,
-        disableColumnMenu: true,
-        columns: [
-            {
-                field: 'id',
-                headerName: "name",
-                flex: .3,
-            },
-            {
-                field: 'started',
-                width: 180,
-                valueFormatter: ({ value }) => !value ? "off" : new Date(value as string).toLocaleString()
-            },
-            {
-                field: 'version',
-                width: 80,
-            },
-            {
-                field: 'description',
-                flex: 1,
-            },
-            {
-                field: "actions",
-                width: 80,
-                align: 'center',
-                renderCell({ row }) {
-                    const { config, id } = row
-                    return h('div', {},
-                        h(IconBtn, {
-                            icon: PowerSettingsNew,
-                            title: (row.started ? "Stop" : "Start") + ' ' + id,
-                            onClick: () =>
-                                apiCall('set_plugin', { id, disable: !!row.started }).then(() =>
-                                    alertDialog(row.started ? "Plugin is stopping" : "Plugin is starting")),
-                        }),
-                        h(IconBtn, {
-                            icon: Settings,
-                            title: "Configuration",
-                            disabled: !config,
-                            onClick() {
-                                formDialog({
-                                    title: `${id} configuration`,
-                                    fields: makeFields(config),
-                                    values: cfg?.[id],
-                                }).then(config => {
-                                    if (config)
-                                        apiCall('set_plugin', { id, config }).then(reloadCfg)
-                                })
-                            }
-                        }),
-                    )
-                }
-            },
-        ]
-    })
-}
-
-function makeFields(config: any) {
-    return Object.entries(config).map(([k,o]) => {
-        const comp = (type2comp as any)[(o as any)?.type] as FC | undefined
-        return ({ k, comp, ...(typeof o === 'object' ? o : null) })
-    })
-}
-
-const type2comp = {
-    string: StringField,
-    number: NumberField,
-    boolean: BoolField,
-    select: SelectField,
-    multiselect: MultiSelectField,
+    const [tab, setTab] = useState(0)
+    return h(Fragment, {},
+        h(Tabs, {
+            value: tab,
+            onChange(ev, i) {
+                setTab(i)
+            }
+        }, LABELS.map(label => h(Tab, { label, key: label })) ),
+        h(PANES[tab])
+    )
 }

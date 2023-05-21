@@ -1,143 +1,172 @@
-// This file is part of HFS - Copyright 2021-2022, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
+// This file is part of HFS - Copyright 2021-2023, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
 
 import { state, useSnapState } from './state'
-import { createElement as h, useEffect, useState } from 'react'
-import { useDebounce } from 'use-debounce'
-import { confirmDialog, promptDialog } from './dialog'
-import { hIcon, isMobile, prefix } from './misc'
-import { login } from './login'
+import { ComponentPropsWithoutRef, createElement as h, Fragment, useEffect, useMemo, useState } from 'react'
+import { alertDialog, confirmDialog, ConfirmOptions, promptDialog } from './dialog'
+import { err2msg, ErrorMsg, hIcon, onlyTruthy, prefix, useStateMounted } from './misc'
+import { loginDialog } from './login'
 import { showOptions } from './options'
 import showUserPanel from './UserPanel'
 import { useNavigate } from 'react-router-dom'
 import _ from 'lodash'
+import { closeDialog } from '@hfs/shared/dialogs'
+import { showUpload, uploadState } from './upload'
+import { useSnapshot } from 'valtio'
+import { apiCall } from '@hfs/shared/api'
+import { reloadList, usePath } from './useFetchList'
+import { t, useI18N } from './i18n'
 
 export function MenuPanel() {
-    const { showFilter, remoteSearch, stopSearch, stoppedSearch, patternFilter, selected } = useSnapState()
-    const [filter, setFilter] = useState(patternFilter)
-    ;[state.patternFilter] = useDebounce(showFilter ? filter : '', 300)
+    const { showFilter, remoteSearch, stopSearch, stoppedSearch, selected, can_upload, can_delete } = useSnapState()
+    const { uploading, qs }  = useSnapshot(uploadState)
     useEffect(() => {
         if (!showFilter)
             state.selected = {}
     }, [showFilter])
 
-    const [started1secAgo, setStarted1secAgo] = useState(false)
+    const {t} = useI18N()
+
+    const [started1secAgo, setStarted1secAgo] = useStateMounted(false)
     useEffect(() => {
         if (!stopSearch) return
         setStarted1secAgo(false)
         setTimeout(() => setStarted1secAgo(true), 1000)
-    }, [stopSearch])
+    }, [stopSearch, setStarted1secAgo])
+    const pathname = usePath()
 
-    //TODO do something for list > 63KB as it hit the url limit (1kb reserved for the rest for the url)
-    const list = Object.keys(selected).map(s => s.endsWith('/') ? s.slice(0,-1) : s).join('*')
+    useEffect(() => {
+        if (!can_delete || localStorage.warn_can_delete) return
+        localStorage.warn_can_delete = 1
+        alertDialog(t('delete_hint', "To delete, first click Select")).then()
+    }, [can_delete])
+
+    // passing files as string in the url should allow 1-2000 items before hitting the url limit of 64KB. Shouldn't be a problem, right?
+    const list = useMemo(() => Object.keys(selected).map(s => s.endsWith('/') ? s.slice(0,-1) : s).join('*'), [selected])
+
+    // avoid useless dom changes while we are still waiting for necessary data
+    const [changingButton, setChangingButton] = useState('')
+    useEffect(() => {
+        if (can_upload !== undefined)
+            setChangingButton(showFilter && can_delete ? 'delete' : (can_upload || qs.length > 0) ? 'upload' : '')
+    }, [showFilter, can_delete, can_upload, qs.length])
     return h('div', { id: 'menu-panel' },
         h('div', { id: 'menu-bar' },
             h(LoginButton),
             h(MenuButton, {
-                icon: 'filter',
-                label: "Filter list",
-                tooltip: "Show only elements matching text you type. Works on list already got from the server. Also enables selection of files, for selective \"Download zip\".",
+                id: 'select-button',
+                icon: 'check',
+                label: t`Select`,
+                tooltip: t('select_tooltip', `Selection applies to "Zip" and "Delete" (when available), but you can also filter the list`),
                 toggled: showFilter,
                 onClick() {
                     state.showFilter = !showFilter
                 }
             }),
+            h(MenuButton, changingButton === 'delete' ? {
+                id: 'delete-button',
+                icon: 'trash',
+                label: t`Delete`,
+                className: 'show-sliding',
+                onClick: () => deleteFiles(Object.keys(selected), pathname)
+            } : changingButton === 'upload' ? {
+                id: 'upload-button',
+                icon: 'upload',
+                label: t`Upload`,
+                className: 'show-sliding ' + (uploading ? 'ani-working' : ''),
+                onClick: showUpload,
+            } : { icon: '', label: '', className: 'before-sliding' }),
             h(MenuButton, getSearchProps()),
             h(MenuButton, {
+                id: 'options-button',
                 icon: 'settings',
-                label: 'Options',
+                label: t`Options`,
                 onClick: showOptions
             }),
             h(MenuLink, {
+                id: 'zip-button',
                 icon: 'archive',
-                label: "Download zip",
-                tooltip: "Download whole list (unfiltered) as a single zip file. If you select some elements, only those will be downloaded.",
+                label: t`Zip`,
+                tooltip: list ? t('zip_tooltip_selected', "Download selected elements as a single zip file")
+                    : t('zip_tooltip_whole', "Download whole list (unfiltered) as a single zip file. If you select some elements, only those will be downloaded."),
                 href: '?'+String(new URLSearchParams(_.pickBy({
                     get: 'zip',
                     search: remoteSearch,
                     list
                 }))),
-                confirm: list ? undefined : remoteSearch ? 'Download results of this search as ZIP archive?' : 'Download whole folder as ZIP archive?',
-            })
-        ),
-        remoteSearch && h('div', { id: 'searched' },
-            (stopSearch ? 'Searching' : 'Searched') + ': ' + remoteSearch + prefix(' (', stoppedSearch && 'interrupted', ')')),
-        showFilter && h('div', { id: 'filter-bar' },
-            h('input', {
-                id: 'filter',
-                placeholder: "Type here to filter the list below",
-                autoComplete: 'off',
-                value: filter,
-                autoFocus: true,
-                onChange(ev) {
-                    setFilter(ev.target.value)
+                ...!list && {
+                    confirm: remoteSearch ? t('zip_confirm_search', "Download ALL results of this search as ZIP archive?")
+                        : t('zip_confirm_folder', "Download WHOLE folder as ZIP archive?"),
+                    confirmOptions: {
+                        afterButtons: h('button', {
+                            onClick() {
+                                state.showFilter = true
+                                closeDialog(false)
+                                return alertDialog(t('zip_checkboxes', "Use checkboxes to select the files, then you can use Zip again"))
+                            },
+                        }, t`Select some files`),
+                    }
                 }
             }),
-            !isMobile() && h(MenuButton, {
-                icon: 'check',
-                label: "Select all",
-                onClick() { workSel(() => true) }
-            }),
-            h(MenuButton, {
-                icon: 'invert',
-                label: 'Invert selection',
-                onClick() { workSel(x => !x) }
-            }),
-        )
+        ),
+        remoteSearch && h('div', { id: 'searched' },
+            (stopSearch ? t`Searching` : t`Searched`) + ': ' + remoteSearch + prefix(' (', stoppedSearch && t`interrupted`, ')')),
     )
-
-    function workSel(cb: (b:boolean) => boolean) {
-        const sel = state.selected
-        for (const { n } of state.filteredList || state.list) {
-            const was = sel[n]
-            if (was !== cb(was))
-                if (was)
-                    delete sel[n]
-                else
-                    sel[n] = true
-        }
-    }
 
     function getSearchProps() {
         return stopSearch && started1secAgo ? {
+            id: 'search-stop-button',
             icon: 'stop',
-            label: 'Stop list',
+            label: t`Stop list`,
             className: 'ani-working',
             onClick() {
                 stopSearch()
                 state.stoppedSearch = true
             }
         } : state.remoteSearch && !stopSearch ? {
+            id: 'search-clear-button',
             icon: 'search_off',
-            label: 'Clear search',
+            label: t`Clear search`,
             onClick() {
                 state.remoteSearch = ''
             }
         } : {
+            id: 'search-button',
             icon: 'search',
-            label: "Search deep",
+            label: t`Search`,
+            onClickAnimation: false,
             async onClick() {
-                state.remoteSearch = await promptDialog('Search for...') || ''
+                state.remoteSearch = await promptDialog(t('search_msg', "Search this folder and sub-folders"), { title: t`Search` }) || ''
             }
         }
     }
 }
 
-interface MenuButtonProps {
+interface MenuButtonProps extends ComponentPropsWithoutRef<"button"> {
     icon: string,
     label: string,
     tooltip?: string,
     toggled?: boolean,
     className?: string,
-    onClick?: () => void
+    onClick?: () => unknown
+    onClickAnimation?: boolean
 }
 
-export function MenuButton({ icon, label, tooltip, toggled, onClick, className = '' }: MenuButtonProps) {
-    return h('button', { title: tooltip || label, onClick, className: className + ' ' + (toggled ? 'toggled' : '') },
-        hIcon(icon),
-        h('label', {}, label))
+export function MenuButton({ icon, label, tooltip, toggled, onClick, onClickAnimation, ...rest }: MenuButtonProps) {
+    const [working, setWorking] = useState(false)
+    return h('button', {
+        title: tooltip || label,
+        onClick() {
+            if (!onClick) return
+            if (onClickAnimation !== false)
+                setWorking(true)
+            Promise.resolve(onClick()).finally(() => setWorking(false))
+        },
+        className: [rest.className, toggled && 'toggled', working && 'ani-working'].filter(Boolean).join(' '),
+        ...rest,
+    }, hIcon(icon), h('label', {}, label) )
 }
 
-export function MenuLink({ href, target, confirm, ...rest }: MenuButtonProps & { href: string, target?: string, confirm?: string }) {
+export function MenuLink({ href, target, confirm, confirmOptions, ...rest }: MenuButtonProps & { href: string, target?: string, confirm?: string, confirmOptions?: ConfirmOptions }) {
     return h('a', {
         tabIndex: -1,
         href,
@@ -145,7 +174,7 @@ export function MenuLink({ href, target, confirm, ...rest }: MenuButtonProps & {
         async onClick(ev) {
             if (!confirm) return
             ev.preventDefault()
-            await confirmDialog(confirm, { href })
+            await confirmDialog(confirm, { href, title: t`Confirm`, ...confirmOptions })
         }
     }, h(MenuButton, rest))
 }
@@ -153,23 +182,40 @@ export function MenuLink({ href, target, confirm, ...rest }: MenuButtonProps & {
 function LoginButton() {
     const snap = useSnapState()
     const navigate = useNavigate()
+    const {t} = useI18N()
     return MenuButton(snap.username ? {
+        id: 'user-button',
+        toggled: true,
         icon: 'user',
         label: snap.username,
         onClick: showUserPanel
     } : {
+        id: 'login-button',
         icon: 'login',
-        label: 'Login',
-        async onClick() {
-            const user = await promptDialog('Username')
-            if (!user) return
-            const password = await promptDialog('Password', { type: 'password' })
-            if (!password) return
-            const res = await login(user, password)
-            if (res?.redirect)
-                navigate(res.redirect)
-        }
+        label: t`Login`,
+        onClickAnimation: false,
+        onClick: () => loginDialog(navigate),
     })
 }
 
-
+export async function deleteFiles(uris: string[], root: string='') {
+    const n = uris.length
+    if (!n) {
+        alertDialog(t('delete_select', "Select something to delete")).then()
+        return
+    }
+    if (!await confirmDialog(t('delete_confirm', {n}, "Delete {n,plural, one{# item} other{# items}}?")))
+        return false
+    const errors = onlyTruthy(await Promise.all(uris.map(uri =>
+        apiCall('del', { uri: root + uri }).then(() => null, err => ({ uri, err }))
+    )))
+    reloadList()
+    const e = errors.length
+    alertDialog(h(Fragment, {},
+        t('delete_completed', {n: n-e}, "Deletion: {n} completed"),
+        e > 0 && t('delete_failed', {n:e}, ", {n} failed"),
+        h('div', { style: { textAlign: 'left', marginTop: '1em', } },
+            ...errors.map(e => h(ErrorMsg, { err: t(err2msg(e.err)) + ': ' + e.uri }))
+        )
+    )).then()
+}

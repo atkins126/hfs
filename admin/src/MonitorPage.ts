@@ -1,14 +1,15 @@
-// This file is part of HFS - Copyright 2021-2022, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
+// This file is part of HFS - Copyright 2021-2023, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
 
 import _ from "lodash"
-import { isValidElement, createElement as h, useMemo, Fragment, useState } from "react"
-import { apiCall, useApiComp, useApiList } from "./api"
-import { PauseCircle, PlayCircle, Delete, Lock, Block } from '@mui/icons-material'
-import { Box, Chip } from '@mui/material'
+import { createElement as h, useMemo, Fragment, useState } from "react"
+import { apiCall, useApiEvents, useApiEx, useApiList } from "./api"
+import { PauseCircle, PlayCircle, Delete, Lock, Block, FolderZip, Upload } from '@mui/icons-material'
+import { Alert, Box, Chip, ChipProps } from '@mui/material'
 import { DataGrid } from "@mui/x-data-grid"
-import { Alert } from '@mui/material'
-import { formatBytes, IconBtn, iconTooltip, manipulateConfig } from "./misc"
-import { Field, SelectField } from './Form'
+import { formatBytes, IconBtn, IconProgress, iconTooltip, manipulateConfig, useBreakpoint } from "./misc"
+import { Field, SelectField } from '@hfs/mui-grid-form'
+import { GridColumns } from '@mui/x-data-grid/models/colDef/gridColDef'
+import { StandardCSSProperties } from '@mui/system/styleFunctionSx/StandardCssProperties'
 
 export default function MonitorPage() {
     return h(Fragment, {},
@@ -20,132 +21,167 @@ export default function MonitorPage() {
 const isoDateRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 
 function MoreInfo() {
-    const [res] = useApiComp('get_status')
-    return h(Fragment, {},
-        isValidElement(res) ? res :
-            h(Box, { display: 'flex', flexWrap: 'wrap', gap: '1em', mb: 2 },
-                pair('started'),
-                pair('http', "HTTP", port),
-                pair('https', "HTTPS", port),
-            )
+    const { data: status, element } = useApiEx('get_status')
+    const { data: connections } = useApiEvents('get_connection_stats')
+    if (status && connections)
+        Object.assign(status, connections)
+    const md = useBreakpoint('md')
+    const sm = useBreakpoint('sm')
+    return element || h(Box, { display: 'flex', flexWrap: 'wrap', gap: '1em', mb: 2 },
+        md && pair('started'),
+        md && pair('http', { label: "HTTP", render: port }),
+        md && pair('https', { label: "HTTPS", render: port }),
+        sm && pair('connections'),
+        pair('sent', { render: formatBytes, minWidth: '4em' }),
+        sm && pair('got', { render: formatBytes, minWidth: '4em' }),
+        pair('outSpeed', { label: "Output speed", render: formatSpeed }),
     )
 
-    type Color = Parameters<typeof Chip>[0]['color']
-    type Render = (v:any) => [string, Color?]
+    type Color = ChipProps['color']
+    type Render = (v: any) => [string, Color?] | string
+    interface PairOptions {
+        label?: string
+        render?: Render
+        minWidth?: StandardCSSProperties['minWidth']
+    }
 
-    function pair(k: string, label: string='', render?:Render) {
-        let v = _.get(res, k)
+    function pair(k: string, { label, minWidth, render }: PairOptions={}) {
+        let v = _.get(status, k)
         if (v === undefined)
             return null
         if (typeof v === 'string' && isoDateRe.test(v))
             v = new Date(v).toLocaleString()
         let color: Color = undefined
-        if (render)
-            [v, color] = render(v)
+        if (render) {
+            v = render(v)
+            if (Array.isArray(v))
+                [v, color] = v
+        }
         if (!label)
             label = _.capitalize(k.replaceAll('_', ' '))
         return h(Chip, {
             variant: 'filled',
             color,
-            label: h(Fragment, {}, h('b',{},label), ': ', v),
+            label: h(Fragment, {},
+                h('b',{},label),
+                ': ',
+                h('span', { style:{ display: 'inline-block', minWidth } }, v),
+            ),
         })
     }
 
     function port(v: any): ReturnType<Render> {
         return v.listening ? ["port " + v.port, 'success']
             : v.error ? [v.error, 'error']
-                : ["off"]
+                : "off"
     }
 
 }
 
 function Connections() {
-    const { list, error } = useApiList('get_connections')
+    const { list, error, props } = useApiList('get_connections')
     const [filtered, setFiltered] = useState(true)
     const [paused, setPaused] = useState(false)
-    const rows = useMemo(()=>
-        list?.filter((x:any) => !filtered || x.path).map((x:any,id:number) => ({ id, ...x })),
+    const rows = useMemo(() =>
+            list?.filter((x: any) => !filtered || x.path).map((x: any, id: number) => ({ id, ...x })),
         [!paused && list, filtered]) //eslint-disable-line
-    // memoizing the table will work around a little DataGrid's bug https://github.com/mui/mui-x/issues/4139
-    const table = useMemo(() => h(DataGrid, {
-        pageSize: 25,
-        rows,
-        columns: [
-            {
-                field: 'ip',
-                headerName: "Address",
-                flex: 1,
-                maxWidth: 400,
-                valueGetter: ({ row, value }) => (row.v === 6 ? `[${value}]` : value) + ' :' + row.port
-            },
-            {
-                field: 'started',
-                headerName: "Started",
-                type: 'dateTime',
-                width: 130,
-                valueFormatter: ({ value }) => new Date(value as string).toLocaleTimeString()
-            },
-            {
-                field: 'path',
-                headerName: "File",
-                flex: 1,
-                renderCell({ value }) {
-                    if (!value) return
-                    const i = value?.lastIndexOf('/')
-                    return h(Fragment, {}, value.slice(i + 1),
-                        i > 0 && h(Box, { ml: 2, color: 'text.secondary' }, value.slice(0, i)))
-                }
-            },
-            {
-                field: 'v',
-                headerName: "Protocol",
-                align: 'center',
-                hide: true,
-                renderCell: ({ value, row }) => h(Fragment, {},
-                    "IPv" + value,
-                    row.secure && iconTooltip(Lock, "HTTPS", { opacity: .5 })
-                )
-            },
-            {
-                field: 'outSpeed',
-                headerName: "Speed",
-                type: 'number',
-                valueFormatter: ({ value }) => value ? formatBytes(value as number * 1000, "B/s", 1000) : ''
-            },
-            {
-                field: 'sent',
-                headerName: "Total",
-                type: 'number',
-                valueFormatter: ({ value }) => formatBytes(value as number)
-            },
-            {
-                field: "Actions ",
-                width: 80,
-                align: 'center',
-                renderCell({ row }) {
-                    return h('div', {},
-                        h(IconBtn, {
-                            icon: Delete,
-                            title: "Disconnect",
-                            onClick: () => apiCall('disconnect', _.pick(row, ['ip', 'port'])),
-                        }),
-                        h(IconBtn, {
-                            icon: Block,
-                            title: "Block IP",
-                            onClick: () => blockIp(row.ip),
-                        }),
+    // if I don't memo 'columns', it won't keep hiding status
+    const columns = useMemo<GridColumns<any>>(() => [
+        {
+            field: 'ip',
+            headerName: "Address",
+            flex: 1,
+            maxWidth: 400,
+            valueGetter: ({ row, value }) => (row.v === 6 ? `[${value}]` : value) + ' :' + row.port
+        },
+        {
+            field: 'user',
+            headerName: "User",
+        },
+        {
+            field: 'started',
+            headerName: "Started",
+            type: 'dateTime',
+            width: 130,
+            valueFormatter: ({ value }) => new Date(value as string).toLocaleTimeString()
+        },
+        {
+            field: 'path',
+            headerName: "File",
+            flex: 1,
+            renderCell({ value, row }) {
+                if (!value) return
+                if (row.archive)
+                    return h(Fragment, {},
+                        h(FolderZip, { sx: { mr: 1 } }),
+                        row.archive,
+                        h(Box, { ml: 2, color: 'text.secondary' }, value)
                     )
-                }
+                const i = value?.lastIndexOf('/')
+                return h(Fragment, {},
+                    row.uploadProgress !== undefined
+                        && h(IconProgress, { icon: Upload, progress: row.uploadProgress, sx: { mr: 1 } }),
+                    value.slice(i + 1),
+                    i > 0 && h(Box, { ml: 2, color: 'text.secondary' }, value.slice(0, i))
+                )
             }
-        ]
-    }), [rows])
+        },
+        {
+            field: 'v',
+            headerName: "Protocol",
+            align: 'center',
+            hide: true,
+            renderCell: ({ value, row }) => h(Fragment, {},
+                "IPv" + value,
+                row.secure && iconTooltip(Lock, "HTTPS", { opacity: .5 })
+            )
+        },
+        {
+            field: 'outSpeed',
+            headerName: "Speed",
+            type: 'number',
+            renderCell: ({ value, row }) => formatSpeed(Math.max(value||0, row.inSpeed||0))
+        },
+        {
+            field: 'sent',
+            headerName: "Total",
+            type: 'number',
+            renderCell: ({ value, row}) => formatBytes(Math.max(value||0, row.got||0))
+        },
+        {
+            field: 'agent',
+            headerName: "Agent",
+        },
+        {
+            field: "Actions",
+            width: 80,
+            align: 'center',
+            hideSortIcons: true,
+            disableColumnMenu: true,
+            renderCell({ row }) {
+                return h('div', {},
+                    h(IconBtn, {
+                        icon: Delete,
+                        title: "Disconnect",
+                        onClick: () => apiCall('disconnect', _.pick(row, ['ip', 'port'])),
+                    }),
+                    h(IconBtn, {
+                        icon: Block,
+                        title: "Block IP",
+                        disabled: row.ip === props?.you,
+                        onClick: () => blockIp(row.ip),
+                    }),
+                )
+            }
+        }
+    ], [props])
     return h(Fragment, {},
         h(Box, { display: 'flex', alignItems: 'center' },
             h(SelectField as Field<boolean>, {
                 fullWidth: false,
                 value: filtered,
-                onChange: setFiltered,
-                options: { "Downloads connections": true, "All connections": false }
+                onChange: setFiltered as any,
+                options: { "Show only files": true, "Show all connections": false }
             }),
 
             h(Box, { flex: 1 }),
@@ -158,10 +194,21 @@ function Connections() {
                 }
             }),
         ),
-        error ? h(Alert, { severity: 'error' }, error) : table
+        error ? h(Alert, { severity: 'error' }, error)
+            : h(DataGrid, { rows, columns,
+                localeText: filtered ? { noRowsLabel: "No downloads at the moment" } : undefined,
+            })
     )
 }
 
 function blockIp(ip: string) {
     return manipulateConfig('block', data => [...data, { ip }])
+}
+
+function formatSpeed(value: number) {
+    return !value ? '' : formatBytes(value * 1000, { post: "B/s", k: 1000, digits: 1 })
+}
+
+function isLocalHost(ip: string) {
+    return ip === '::1' || ip.endsWith('127.0.0.1')
 }

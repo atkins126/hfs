@@ -1,33 +1,96 @@
-// This file is part of HFS - Copyright 2021-2022, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
+// This file is part of HFS - Copyright 2021-2023, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
 
-import { createElement as h, isValidElement, useEffect, useMemo, useState } from 'react'
-import { useApi, useApiComp } from './api'
-import { Alert, Grid, Link, List, ListItem, ListItemText, Typography } from '@mui/material'
+import { createElement as h, Fragment, useEffect, useMemo, useState } from 'react'
+import { apiCall, useApi, useApiEx } from './api'
+import {
+    Alert,
+    Button,
+    Card, CardContent,
+    Grid,
+    Link,
+    List, ListItem, ListItemText,
+    Typography
+} from '@mui/material'
 import { state, useSnapState } from './state'
 import VfsMenuBar from './VfsMenuBar'
 import VfsTree from './VfsTree'
-import { onlyTruthy, prefix } from './misc'
+import { IconBtn, newDialog, onlyTruthy, prefix, useBreakpoint } from './misc'
 import { reactJoin } from '@hfs/shared'
 import _ from 'lodash'
 import { AlertProps } from '@mui/material/Alert/Alert'
 import FileForm from './FileForm'
+import { Close, Delete } from '@mui/icons-material'
+import { alertDialog, confirmDialog } from './dialog'
+import { Flex } from './misc'
+import { VfsPerm } from '../../src/vfs'
 
 let selectOnReload: string[] | undefined
 
 export default function VfsPage() {
     const [id2node] = useState(() => new Map<string, VfsNode>())
-    const snap = useSnapState()
-    const [res, reload] = useApiComp('get_vfs')
-    useMemo(() => snap.vfs || reload(), [snap.vfs, reload])
+    const { vfs, selectedFiles } = useSnapState()
+    const { data, reload, element } = useApiEx('get_vfs')
+    useMemo(() => vfs || reload(), [vfs, reload])
+    const anyMask = useMemo(() =>
+        (function someMask(node: typeof vfs) {
+            return !_.isEmpty(node?.masks) || node?.children?.some(someMask)
+        })(vfs),
+        [vfs])
+    const sideBreakpoint = 'md'
+    const isSideBreakpoint = useBreakpoint(sideBreakpoint)
+    const [status] = useApi('get_status')
+    const urls = useMemo(() =>
+        typeof status === 'object' && _.sortBy(
+            Object.values(status.urls?.https || status.urls?.http || {}) as string[],
+            url => url.includes('[')
+        ),
+        [status])
+
+    function close() {
+        state.selectedFiles = []
+    }
+
+    const sideContent = !selectedFiles.length ? null
+        : selectedFiles.length === 1 ? h(FileForm, {
+                addToBar: isSideBreakpoint && h(IconBtn, { // not really useful, but users misled in thinking it's a dialog will find satisfaction in dismissing the form
+                    icon: Close,
+                    title: "Close",
+                    onClick: close
+                }),
+                defaultPerms: data?.defaultPerms as VfsPerms,
+                anyMask,
+                urls,
+                file: selectedFiles[0] as VfsNode  // it's actually Snapshot<VfsNode> but it's easier this way
+            })
+            : h(Fragment, {},
+                h(Flex, { alignItems: 'center' },
+                    h(Typography, {variant: 'h6'}, selectedFiles.length + ' selected'),
+                    h(Button, { onClick: deleteFiles, startIcon: h(Delete) }, "Remove"),
+                ),
+                h(List, { dense: true, disablePadding: true },
+                    selectedFiles.map(f => h(ListItem, { key: f.id },
+                        h(ListItemText, { primary: f.name, secondary: f.source }) ))
+                )
+            )
+
+    useEffect(() => {
+        if (isSideBreakpoint || !sideContent) return
+        return newDialog({
+            title: selectedFiles.length > 1 ? "Multiple selection" : selectedFiles[0].name,
+            Content: () => sideContent,
+            onClose: close,
+        })
+    },[isSideBreakpoint, selectedFiles])
+
     useEffect(() => {
         state.vfs = undefined
-        if (!res) return
+        if (!data) return
         // rebuild id2node
         id2node.clear()
-        const { root } = res
+        const { root } = data
         if (!root) return
-        recur(root) // this must be done before state change that would cause Tree to render and expecting id2node
         root.isRoot = true
+        recur(root) // this must be done before state change that would cause Tree to render and expecting id2node
         state.vfs = root
         // refresh objects of selectedFiles
         const ids = selectOnReload || state.selectedFiles.map(x => x.id)
@@ -36,29 +99,21 @@ export default function VfsPage() {
             id2node.get(id)))
 
         // calculate id and parent fields, and builds the map id2node
-        function recur(node: VfsNode, pre='', parent: VfsNode|undefined=undefined) {
+        function recur(node: VfsNode, pre='/', parent: VfsNode|undefined=undefined) {
             node.parent = parent
-            node.id = prefix(pre, node.name) || '/' // root
+            node.id = node.isRoot ? '/' : prefix(pre, encodeURIComponent(node.name), node.type === 'folder' ? '/' : '')
             id2node.set(node.id, node)
             if (!node.children) return
             for (const n of node.children)
-                recur(n, (pre && node.id) + '/', node)
+                recur(n, node.id, node)
         }
 
-    }, [res, id2node])
-    const [status] = useApi(window.location.host === 'localhost' && 'get_status')
-    const urls = useMemo(() =>
-        typeof status === 'object'
-            && _.sortBy(
-                onlyTruthy(Object.values(status.urls?.https || status.urls?.http || {}).map(u => typeof u === 'string' && u)),
-                url => url.includes('[')
-            ),
-        [status])
-    if (isValidElement(res)) {
+    }, [data, id2node])
+    if (element) {
         id2node.clear()
-        return res
+        return element
     }
-    const anythingShared = !res?.root?.children?.length && !res?.root?.source
+    const anythingShared = !data?.root?.children?.length && !data?.root?.source
     const alert: AlertProps | false = anythingShared ? {
         severity: 'warning',
         children: "Add something to your shared files — click Add"
@@ -71,23 +126,13 @@ export default function VfsPage() {
     }
     return h(Grid, { container:true, rowSpacing: 1, maxWidth: '80em', columnSpacing: 2 },
         alert && h(Grid, { item: true, mb: 2, xs: 12 }, h(Alert, alert)),
-        h(Grid, { item:true, sm: 6, lg: 5 },
+        h(Grid, { item:true, [sideBreakpoint]: 6, lg: 5 },
             h(Typography, { variant: 'h6', mb:1, }, "Virtual File System"),
             h(VfsMenuBar),
-            snap.vfs && h(VfsTree, { id2node })),
-        h(Grid, { item:true, sm: 6, lg: 7, maxWidth:'100%' },
-            h(SidePanel))
+            vfs && h(VfsTree, { id2node })),
+        isSideBreakpoint && sideContent && h(Grid, { item:true, [sideBreakpoint]: 6, lg: 7, maxWidth:'100%' },
+            h(Card, {}, h(CardContent, {}, sideContent) ))
     )
-}
-
-function SidePanel() {
-    const { selectedFiles: files } = useSnapState()
-    return files.length === 0 ? null
-        : files.length === 1 ? h(FileForm, { file: files[0] as VfsNode }) // it's actually Snapshot<VfsNode> but it's easier this way
-            : h(List, {},
-                files.length + ' selected',
-                files.map(f => h(ListItem, { key: f.name },
-                    h(ListItemText, { primary: f.name, secondary: f.source }) )))
 }
 
 export function reloadVfs(pleaseSelect?: string[]) {
@@ -95,7 +140,32 @@ export function reloadVfs(pleaseSelect?: string[]) {
     state.vfs = undefined
 }
 
-export type VfsNode = {
+export async function deleteFiles() {
+    const f = state.selectedFiles
+    if (!f.length) return
+    if (!await confirmDialog(`Delete ${f.length} item(s)?`)) return
+    try {
+        const uris = f.map(x => x.id)
+        _.pull(uris, '/')
+        const { errors } = await apiCall('del_vfs', { uris })
+        const urisThatFailed = uris.filter((uri, idx) => errors[idx])
+        if (urisThatFailed.length)
+            return alertDialog("Following elements couldn't be deleted: " + urisThatFailed.join(', '), 'error')
+        reloadVfs()
+    }
+    catch(e) {
+        await alertDialog(e as Error)
+    }
+}
+
+export interface VfsPerms {
+    can_see?: Who
+    can_read?: Who
+    can_list?: Who
+    can_upload?: Who
+    can_delete?: Who
+}
+export interface VfsNode extends VfsPerms {
     id: string
     name: string
     type?: 'folder'
@@ -106,12 +176,12 @@ export type VfsNode = {
     default?: string
     children?: VfsNode[]
     parent?: VfsNode
-    can_see: Who
-    can_read: Who
+    propagate?: Partial<Record<keyof VfsPerm, boolean>> | null
     website?: true
     masks?: any
-
+    byMasks?: VfsPerms
     isRoot?: true
+    accept?: string
 }
 
 const WHO_ANYONE = true

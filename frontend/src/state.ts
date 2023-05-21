@@ -1,38 +1,40 @@
-// This file is part of HFS - Copyright 2021-2022, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
+// This file is part of HFS - Copyright 2021-2023, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
 
 import _ from 'lodash'
 import { proxy, useSnapshot } from 'valtio'
 import { subscribeKey } from 'valtio/utils'
-import { apiCall } from './api'
 import { DirList } from './BrowseFiles'
 
 export const state = proxy<{
     stopSearch?: ()=>void,
     stoppedSearch?: boolean,
-    iconsClass: string,
+    iconsReady: boolean,
     username: string,
     list: DirList,
     filteredList?: DirList,
     loading: boolean,
-    error: Error | null,
+    error?: string,
     listReloader: number,
     patternFilter: string,
     showFilter: boolean,
-    selected: Record<string,true>, // optimization: by using an object instead of an array, components are not rendered when the array changes, but only when their specific property change
+    selected: { [uri:string]: true }, // by using an object instead of an array, Entry components are not rendered when others get selected
     remoteSearch: string,
     sortBy: string,
     invertOrder: boolean,
     foldersFirst: boolean,
+    sortNumerics: boolean,
     theme: string,
     adminUrl?: string,
-    serverConfig?: any,
+    loginRequired?: boolean, // force user to login before proceeding
+    messageOnly?: string, // no gui, just show this message
+    can_upload?: boolean
+    can_delete?: boolean
+    accept?: string
 }>({
-    iconsClass: '',
+    iconsReady: false,
     username: '',
     list: [],
-    filteredList: undefined,
     loading: false,
-    error: null,
     listReloader: 0,
     patternFilter: '',
     showFilter: false,
@@ -41,6 +43,7 @@ export const state = proxy<{
     sortBy: 'name',
     invertOrder: false,
     foldersFirst: true,
+    sortNumerics: false,
     theme: '',
 })
 
@@ -49,16 +52,11 @@ export function useSnapState() {
 }
 
 const SETTINGS_KEY = 'hfs_settings'
-const SETTINGS_TO_STORE: (keyof typeof state)[] = ['sortBy','foldersFirst','theme']
+const SETTINGS_TO_STORE: (keyof typeof state)[] = ['sortBy', 'sortNumerics', 'invertOrder', 'foldersFirst', 'theme']
 
 loadSettings()
 for (const k of SETTINGS_TO_STORE)
     subscribeKey(state, k, storeSettings)
-
-// load server config
-setTimeout(() =>
-    apiCall('config', {}, { noModal: true }).then(res =>
-        state.serverConfig = res) )
 
 function loadSettings() {
     const json = localStorage.getItem(SETTINGS_KEY)

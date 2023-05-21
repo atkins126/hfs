@@ -1,14 +1,21 @@
 /*
-this plugin is currently working only with exe version.
+This plugin is currently experimental and working only with exe version.
 Its capability is to offer automatic restart when an update is available in the form of hfs.exe-new file.
- */
+
+Tip: In my case I'm uploading "hfs.exe-new" over ftp, and it's a bit slow, so to avoid the plugin to catch
+    an unfinished file, I do the upload using a temporary name, and only when it's done I rename it to "hfs.exe-new".
+*/
+exports.version = 0.2
+exports.description = "automatic restart when an update is available in the form of hfs.exe-new file"
+exports.apiRequired = 3 // api.log
+
 const NEW = 'hfs.exe-new'
 const BATCH_NAME = 'run-updater.bat'
 const BATCH = `@echo off
 :loop
 setlocal
 SET hfs_updater=1
-hfs
+hfs %*
 endlocal
 if exist hfs.exe-new (
   move /y hfs.exe hfs.exe-old
@@ -17,20 +24,18 @@ if exist hfs.exe-new (
 )
 `
 
-const LOG_PREFIX = "UPDATER PLUGIN:"
-
 exports.init = async api => {
     const fs = api.require('fs')
     fs.writeFile(BATCH_NAME, BATCH, err =>
-        err && console.error(LOG_PREFIX, "couldn't write", BATCH_NAME))
+        err && api.log("couldn't write", BATCH_NAME))
     if (!process.env.hfs_updater)
-        return console.log(LOG_PREFIX, "run", BATCH_NAME, "to have restart-on-update")
+        return api.log("run", BATCH_NAME, "to have restart-on-update")
 
-    console.log(LOG_PREFIX, "ready")
+    api.log("ready")
     const timer = setInterval(() => {
         fs.access(NEW, fs.constants.W_OK, err => {
             if (err) return
-            console.log(LOG_PREFIX, "exiting for update")
+            api.log("exiting for update")
             process.exit(0)
         })
     }, 5000)

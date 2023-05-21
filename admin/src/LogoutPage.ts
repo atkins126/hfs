@@ -1,28 +1,41 @@
-import { createElement as h, isValidElement } from "react"
-import { Alert, Box, Button } from '@mui/material'
-import { apiCall, useApiComp } from './api'
+// This file is part of HFS - Copyright 2021-2023, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
+
+import { createElement as h, Fragment } from "react"
+import { Alert, Box } from '@mui/material'
+import { apiCall, useApiEx } from './api'
 import { alertDialog } from "./dialog"
 import { useSnapState } from './state'
+import { Btn } from './misc'
+import { Logout, PowerSettingsNew } from '@mui/icons-material'
 
 export default function LogoutPage() {
-    const [cfg] = useApiComp('get_config', { only: [] })
+    const { element } = useApiEx('get_config', { only: [] }) // sort of noop, just to get the 'element' part
     const { username } = useSnapState()
-    if (isValidElement(cfg))
-        return cfg
-    if (!username)
-        return h(Alert, { severity: 'info' }, "You are not logged in, because authentication is not required on localhost")
-    return h(Box, { display: 'flex', flexDirection:'column', gap: 2 },
-        "You are logged in as " + username,
-        h(Box, {},
-            h(Button, {
-                size: 'large',
-                variant: 'contained',
-                onClick() {
-                    apiCall('logout').then(() =>
-                            apiCall('get_status').catch(()=>0), // second call is supposed to trigger a 401 if login is required
-                        alertDialog) // show errors
-                }
-            }, "Yes, I want to logout")
-        )
+    if (element)
+        return element
+    return h(Box, { display: 'flex', flexDirection:'column', alignItems: 'flex-start', gap: 2 },
+        !username ? h(Alert, { severity: 'info' }, "You are not logged in, because authentication is not required on localhost")
+            : h(Fragment, {},
+                "You are logged in as: " + username,
+                h(Btn, {
+                    icon: Logout,
+                    size: 'large',
+                    variant: 'contained',
+                    onClick: ()  => apiCall('logout').catch(err => // we expect 401
+                            err.code !== 401 && alertDialog(err))
+                }, "I want to logout")
+            ),
+        h(Btn, {
+            icon: PowerSettingsNew,
+            size: 'large',
+            variant: 'contained',
+            color: 'warning',
+            confirm: "Stopping the server, this interface won't respond anymore",
+            async onClick() {
+                await apiCall('quit')
+                await alertDialog("Good-bye", 'success')
+                location.reload()
+            },
+        }, "Quit HFS")
     )
 }

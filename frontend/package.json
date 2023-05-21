@@ -1,37 +1,32 @@
 {
   "name": "@hfs/frontend",
   "private": true,
-  "proxy": "http://localhost",
   "scripts": {
-    "start": "react-scripts start",
-    "build": "cross-env GENERATE_SOURCEMAP=false BUILD_PATH='../dist/frontend' react-scripts build",
-    "test": "react-scripts test",
-    "test-dep": "npm audit --production",
-    "eject": "react-scripts eject"
+    "start": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test-dep": "npm audit --production"
   },
   "dependencies": {
-    "js-sha512": "^0.8.0",
+    "@hfs/shared": "*",
     "lodash": "^4.17.21",
-    "react": "^17.0.2",
-    "react-dom": "^17.0.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "react-router-dom": "^6.1.1",
+    "talkr": "^3.3.9",
     "tssrp6a": "^3.0.0",
-    "use-debounce": "^7.0.1",
+    "usehooks-ts": "^2.6.0",
     "valtio": "^1.2.7",
     "web-vitals": "^2.1.4"
   },
   "devDependencies": {
-    "@testing-library/jest-dom": "^5.16.1",
-    "@testing-library/react": "^12.1.2",
-    "@testing-library/user-event": "^13.5.0",
-    "@types/jest": "^27.4.0",
     "@types/lodash": "^4.14.178",
     "@types/node": "^16.11.21",
-    "@types/react": "^17.0.0",
-    "@types/react-dom": "^17.0.0",
+    "@types/react": "^18.0.15",
+    "@types/react-dom": "^18.0.6",
     "cross-env": "^7.0.3",
-    "react-scripts": "^5.0.1",
-    "sass": "^1.45.0"
+    "sass": "^1.54.5",
+    "vite": "^4.0.4"
   },
   "eslintConfig": {
     "extends": [

@@ -1,83 +1,116 @@
-// This file is part of HFS - Copyright 2021-2022, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
+// This file is part of HFS - Copyright 2021-2023, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
 
-import { makeStyles } from '@mui/styles'
 import { state, useSnapState } from './state'
-import { createElement as h, ReactElement, useState } from 'react'
+import { createElement as h, ReactElement, useRef, useState } from 'react'
 import { TreeItem, TreeView } from '@mui/lab'
 import {
-    ChevronRight,
-    ExpandMore,
-    TheaterComedy,
-    Folder,
-    Home,
-    InsertDriveFileOutlined,
-    Lock,
-    RemoveRedEye,
-    Web
+    ChevronRight, ExpandMore, TheaterComedy, Folder, Home,
+    InsertDriveFileOutlined, Lock, RemoveRedEye, Web, Upload, Cloud, Delete, HighlightOff
 } from '@mui/icons-material'
-import { VfsNode, Who } from './VfsPage'
+import { Box } from '@mui/material'
+import { reloadVfs, VfsNode, Who } from './VfsPage'
 import { iconTooltip, isWindowsDrive, onlyTruthy } from './misc'
+import { apiCall } from './api'
+import { alertDialog, confirmDialog } from './dialog'
 
 export const FolderIcon = Folder
 export const FileIcon = InsertDriveFileOutlined
-
-const useStyles = makeStyles({
-    label: {
-        display: 'flex',
-        gap: '.5em',
-        lineHeight: '2em',
-        alignItems: 'center',
-    },
-    path: {
-        opacity: .4,
-    }
-})
 
 export default function VfsTree({ id2node }:{ id2node: Map<string, VfsNode> }) {
     const { vfs, selectedFiles } = useSnapState()
     const [selected, setSelected] = useState<string[]>(selectedFiles.map(x => x.id)) // try to restore selection after reload
     const [expanded, setExpanded] = useState(Array.from(id2node.keys()))
-    const styles = useStyles()
+    const dragging = useRef<string>()
+    const ref = useRef<HTMLElement>()
     if (!vfs)
         return null
+    const treeId = 'vfs'
     return h(TreeView, {
+        ref,
         expanded,
         selected,
         multiSelect: true,
-        sx: { overflowX: 'auto' },
+        id: treeId,
+        sx: {
+            overflowX: 'auto',
+            maxWidth: ref.current && `calc(100vw - ${16 + ref.current.offsetLeft}px)`, // limit possible horizontal scrolling to this element
+            '& ul': { borderLeft: '1px dashed #444', marginLeft: '15px' },
+        },
         onNodeSelect(ev, ids) {
             setSelected(ids)
             state.selectedFiles = onlyTruthy(ids.map(id => id2node.get(id)))
         }
     }, recur(vfs as Readonly<VfsNode>))
 
-    function isRestricted(who: Who) {
+    function isRestricted(who: Who | undefined) {
         return who !== undefined && who !== true
     }
 
     function recur(node: Readonly<VfsNode>): ReactElement {
-        let { id, name, source, isRoot } = node
+        let { id, name, isRoot } = node
         if (!id)
             debugger
         const folder = node.type === 'folder'
-        if (folder && !isWindowsDrive(source) && source === name) // we need a way to show that the name we are displaying is a source in this ambiguous case, so we add a redundant ./
-            source = './' + source
         return h(TreeItem, {
-            label: h('div', { className: styles.label },
-                !name ? iconTooltip(Home, "home, or root if you like")
-                    : folder ? iconTooltip(FolderIcon, "Folder")
-                        : iconTooltip(FileIcon, "File"),
-                isRestricted(node.can_see) && iconTooltip(RemoveRedEye, "Restrictions on who can see"),
-                isRestricted(node.can_read) && iconTooltip(Lock, "Restrictions on who can download"),
-                node.default && iconTooltip(Web, "Act as website"),
-                node.masks && iconTooltip(TheaterComedy, "Masks"),
-                isRoot ? "Home"
-                    // special rendering if the whole source is not too long, and the name was not customized
-                    : source?.length! < 45 && source?.endsWith(name) ? h('span', {},
-                        h('span', { className:styles.path }, source.slice(0,-name.length)),
-                        h('span', {}, source.slice(-name.length)),
-                    )
-                    : name
+            ref(el: any) { // workaround to permit drag&drop with mui5's tree
+                el?.addEventListener('focusin', (e: any) => e.stopImmediatePropagation())
+            },
+            label: h(Box, {
+                draggable: !isRoot,
+                onDragStart() {
+                    dragging.current = id
+                },
+                onDragOver(ev) {
+                    if (!folder) return
+                    const src = dragging.current
+                    if (src?.startsWith(id) && !src.slice(id.length + 1).includes('/')) return // src must be not me or my parent
+                    ev.preventDefault()
+                },
+                async onDrop() {
+                    const from = dragging.current
+                    if (!from) return
+                    if (await confirmDialog(`Moving ${from} under ${id}`))
+                        apiCall('move_vfs', { from, parent: id }).then(() => {
+                            reloadVfs([ id + from.slice(1 + from.lastIndexOf('/', from.length-2)) ])
+                        }, alertDialog)
+                },
+                sx: {
+                    display: 'flex',
+                    gap: '.5em',
+                    lineHeight: '2em',
+                    alignItems: 'center',
+                }
+            },
+                h(Box, { display: 'flex', flex: 0, },
+                    isRoot ? iconTooltip(Home, "home, or root if you like")
+                        : folder ? iconTooltip(FolderIcon, "Folder")
+                            : iconTooltip(FileIcon, "File"),
+                    // attributes
+                    h(Box, { sx: {
+                        flex: 0, ml: '2px', my: '2px', '&>*': { fontSize: '87%', opacity: .6, mt: '-2px' },
+                        display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'auto auto',
+                    } },
+                        node.can_delete !== undefined && iconTooltip(Delete, "Delete permission"),
+                        node.can_upload !== undefined && iconTooltip(Upload, "Upload permission"),
+                        !isRoot && !node.source && iconTooltip(Cloud, "Virtual (no source)"),
+                        isRestricted(node.can_see) && iconTooltip(RemoveRedEye, "Restrictions on who can see"),
+                        isRestricted(node.can_read) && iconTooltip(Lock, "Restrictions on who can download"),
+                        node.default && iconTooltip(Web, "Act as website"),
+                        node.masks && iconTooltip(TheaterComedy, "Masks"),
+                        node.size === -1 && iconTooltip(HighlightOff, "Source not found")
+                    ),
+                ),
+                isRoot ? "Home" : (() => { // special rendering if the whole source is not too long, and the name was not customized
+                    const ps = node.parent?.source
+                    const { source } = node
+                    const rel = ps && source?.startsWith(ps) ? '.' + source.slice(ps.length) : source
+                    return !rel || !source?.endsWith(name) || rel.length > 45
+                        ? h(Box, { lineHeight: '1.2em' }, name)
+                        : h('span', {},
+                            h('span', { style: { opacity: .4 } }, rel.slice(0,-name.length)),
+                            rel.slice(-name.length),
+                        )
+                })()
             ),
             key: name,
             collapseIcon: h(ExpandMore, {
@@ -95,7 +128,8 @@ export default function VfsTree({ id2node }:{ id2node: Map<string, VfsNode> }) {
                 }
             }),
             nodeId: id
-        }, isRoot && !node.children?.length ? "nothing here" : node.children?.map(recur))
+        }, isRoot && !node.children?.length ? h(TreeItem, { nodeId: '?', label: h('i', {}, "nothing here") })
+            : node.children?.map(recur))
     }
 
 }

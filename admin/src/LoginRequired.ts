@@ -1,13 +1,20 @@
+// This file is part of HFS - Copyright 2021-2023, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
+
 import { state, useSnapState } from './state'
-import { createElement as h, Fragment, useState } from 'react'
-import { Center } from './misc'
-import { Form } from './Form'
+import { createElement as h, Fragment, useEffect, useRef, useState } from 'react'
+import { Center, getHFS } from './misc'
+import { Form } from '@hfs/mui-grid-form'
 import { apiCall } from './api'
-import { SRPClientSession, SRPParameters, SRPRoutines } from 'tssrp6a'
-import { Alert } from '@mui/material'
+import { srpSequence } from '@hfs/shared'
+import { Alert, Box } from '@mui/material'
 
 export function LoginRequired({ children }: any) {
     const { loginRequired } = useSnapState()
+    if (loginRequired === 403)
+        return h(Center, {},
+            h(Alert, { severity: 'error' }, "Admin-panel only for localhost"),
+            h(Box, { mt: 2, fontSize: 'small' }, "because no admin account was configured")
+        )
     if (loginRequired)
         return h(LoginForm)
     return h(Fragment, {}, children)
@@ -16,26 +23,29 @@ export function LoginRequired({ children }: any) {
 function LoginForm() {
     const [values, setValues] = useState({ username: '', password: '' })
     const [error, setError] = useState('')
+    const formRef = useRef<HTMLFormElement>()
+    const empty = formRef.current?.querySelector('input[value=""]')
+    useEffect(() => (empty as any)?.focus?.(), [empty])
     return h(Center, {},
         h(Form, {
-            values: {},
+            formRef,
+            values,
             set(v, k) {
                 setValues({ ...values, [k]: v })
             },
             fields: [
-                { k: 'username', autoComplete: 'username', autoFocus: true },
-                { k: 'password', type: 'password', autoComplete: 'current-password' },
+                { k: 'username', autoComplete: 'username', autoFocus: true, required: true },
+                { k: 'password', type: 'password', autoComplete: 'current-password', required: true },
             ],
             addToBar: [ error && h(Alert, { severity: 'error', sx: { flex: 1 } }, error) ],
+            saveOnEnter: true,
             save: {
                 children: "Enter",
                 startIcon: null,
                 async onClick() {
-                    const { username, password } = values
-                    if (!username || !password) return
                     try {
                         setError('')
-                        await login(username, password)
+                        await login(values.username, values.password)
                     }
                     catch(e) {
                         setError(String(e))
@@ -47,20 +57,12 @@ function LoginForm() {
 }
 
 async function login(username: string, password: string) {
-    const WRONG = "Wrong username or password"
-    const { pubKey, salt } = await apiCall('loginSrp1', { username })
-        .catch(() => { throw WRONG })
-    if (!salt)
-        throw "Bad response from server"
-
-    const srp6aNimbusRoutines = new SRPRoutines(new SRPParameters())
-    const srp = new SRPClientSession(srp6aNimbusRoutines);
-    const resStep1 = await srp.step1(username, password)
-    const resStep2 = await resStep1.step2(BigInt(salt), BigInt(pubKey))
-    const res = await apiCall('loginSrp2', { pubKey: String(resStep2.A), proof: String(resStep2.M1) }) // bigint-s must be cast to string to be json-ed
-        .catch(() => { throw WRONG })
-    await resStep2.step3(BigInt(res.proof))
-        .catch(() => { throw "Login aborted: server identity cannot be trusted" })
+    const res = await srpSequence(username, password, apiCall).catch(err => {
+        throw err?.code === 401 ? "Wrong username or password"
+            : err === 'trust' ? "Login aborted: server identity cannot be trusted"
+            : err?.name === 'AbortError' ? "Server didn't respond"
+            : (err?.message || "Unknown error")
+    })
     if (!res.adminUrl)
         throw "This account has no Admin access"
 
@@ -69,8 +71,7 @@ async function login(username: string, password: string) {
     sessionRefresher(res)
 }
 
-// @ts-ignore
-sessionRefresher(window.SESSION)
+sessionRefresher(getHFS().session)
 
 function sessionRefresher(response: any) {
     if (!response) return

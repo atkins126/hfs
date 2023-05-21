@@ -1,14 +1,25 @@
-// This file is part of HFS - Copyright 2021-2022, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
+// This file is part of HFS - Copyright 2021-2023, Massimo Melina <a@rejetto.com> - License https://www.gnu.org/licenses/gpl-3.0.txt
 
-import { createElement as h, FC } from 'react'
-import { Box, CircularProgress, IconButton, Link, Tooltip } from '@mui/material'
+import { createElement as h, FC, Fragment, ReactNode } from 'react'
+import {
+    Box,
+    Breakpoint,
+    ButtonProps,
+    CircularProgress,
+    IconButton,
+    IconButtonProps,
+    Link,
+    Tooltip, TooltipProps,
+    useMediaQuery
+} from '@mui/material'
 import { Link as RouterLink } from 'react-router-dom'
 import { SxProps } from '@mui/system'
-import { SvgIconComponent } from '@mui/icons-material'
-import { alertDialog } from './dialog'
+import { Refresh, SvgIconComponent } from '@mui/icons-material'
+import { alertDialog, confirmDialog } from './dialog'
 import { apiCall } from './api'
-import { onlyTruthy, useStateMounted } from '@hfs/shared'
-import {} from '@hfs/shared' // without this we get weird warnings by webpack
+import { dontBotherWithKeys, formatPerc, useStateMounted } from '@hfs/shared'
+import { Promisable } from '@hfs/mui-grid-form'
+import { LoadingButton, LoadingButtonProps } from '@mui/lab'
 export * from '@hfs/shared'
 
 export function spinner() {
@@ -28,22 +39,86 @@ export function isEqualLax(a: any,b: any): boolean {
 export function modifiedSx(is: boolean) {
     return is ? { outline: '2px solid' } : undefined
 }
+interface IconBtnProps extends Omit<IconButtonProps, 'disabled'|'title'|'onClick'> {
+    title?: ReactNode
+    icon: SvgIconComponent
+    disabled?: boolean | string
+    progress?: boolean | number
+    link?: string
+    confirm?: string
+    tooltipProps?: Partial<TooltipProps>
+    onClick: (...args: Parameters<NonNullable<IconButtonProps['onClick']>>) => Promisable<any>
+}
 
-export function IconBtn({ title, icon, onClick, ...rest }: { title?: string, icon: SvgIconComponent, [rest:string]:any }) {
+export function IconBtn({ title, icon, onClick, disabled, progress, link, tooltipProps, confirm, ...rest }: IconBtnProps) {
     const [loading, setLoading] = useStateMounted(false)
+    if (typeof disabled === 'string')
+        title = disabled
+    if (link)
+        onClick = () => window.open(link)
     let ret: ReturnType<FC> = h(IconButton, {
-        disabled: loading,
+        disabled: Boolean(loading || progress || disabled),
         ...rest,
-        onClick() {
-            const ret = onClick?.apply(this,arguments)
+        async onClick(...args) {
+            if (confirm && !await confirmDialog(confirm)) return
+            const ret = onClick?.apply(this,args)
             if (ret && ret instanceof Promise) {
                 setLoading(true)
                 ret.catch(alertDialog).finally(()=> setLoading(false))
             }
         }
     }, h(icon))
+    if ((progress || loading) && progress !== false) // false is also useful to inhibit behavior with loading
+        ret = h(Box, { position:'relative', display: 'inline-block' },
+            h(CircularProgress, {
+                ...(typeof progress === 'number' ? { value: progress*100, variant: 'determinate' } : null),
+                style: { position:'absolute', top: 4, left: 4, width: 32, height: 32 }
+            }),
+            ret
+        )
     if (title)
-        ret = h(Tooltip, { title, children: h('span',{},ret) })
+        ret = h(Tooltip, { title, ...tooltipProps, children: h('span',{},ret) })
+    return ret
+}
+
+interface BtnProps extends Omit<LoadingButtonProps,'disabled'|'title'|'onClick'> {
+    icon: SvgIconComponent
+    title?: ReactNode
+    disabled?: boolean | string
+    progress?: boolean | number
+    link?: string
+    confirm?: string
+    tooltipProps?: TooltipProps
+    onClick: (...args: Parameters<NonNullable<ButtonProps['onClick']>>) => Promisable<any>
+}
+export function Btn({ icon, title, onClick, disabled, progress, link, tooltipProps, confirm, ...rest }: BtnProps) {
+    const [loading, setLoading] = useStateMounted(false)
+    if (typeof disabled === 'string') {
+        title = disabled
+        disabled = true
+    }
+    if (link)
+        onClick = () => window.open(link)
+    let ret: ReturnType<FC> = h(LoadingButton, {
+        variant: 'contained',
+        startIcon: h(icon),
+        loading: Boolean(loading || progress),
+        loadingPosition: 'start',
+        loadingIndicator: typeof progress !== 'number' ? undefined
+            : h(CircularProgress, { size: '1rem', value: progress*100, variant: 'determinate' }),
+        disabled,
+        ...rest,
+        async onClick(...args) {
+            if (confirm && !await confirmDialog(confirm)) return
+            const ret = onClick?.apply(this,args)
+            if (ret && ret instanceof Promise) {
+                setLoading(true)
+                ret.catch(alertDialog).finally(()=> setLoading(false))
+            }
+        }
+    })
+    if (title)
+        ret = h(Tooltip, { title, ...tooltipProps, children: h('span',{},ret) })
     return ret
 }
 
@@ -56,7 +131,7 @@ export function InLink(props:any) {
 }
 
 export function Center(props: any) {
-    return h(Box, { display:'flex', height:'100%', width:'100%', justifyContent:'center', alignItems:'center', ...props })
+    return h(Box, { display:'flex', height:'100%', width:'100%', justifyContent:'center', alignItems:'center',  flexDirection: 'column', ...props })
 }
 
 export async function manipulateConfig(k: string, work:(data:any) => any) {
@@ -67,32 +142,68 @@ export async function manipulateConfig(k: string, work:(data:any) => any) {
         await apiCall('set_config', { values: { [k]: will } })
 }
 
-export function typedKeys<T>(o: T) {
+export function typedKeys<T extends {}>(o: T) {
     return Object.keys(o) as (keyof T)[]
 }
 
-export function dirname(s: string) {
-    let i = s.lastIndexOf('/')
-    if (i < 0)
-        i = s.lastIndexOf('\\')
-    return i < 0 ? '' : s.slice(0, i)
+export function xlate(input: any, table: Record<string, any>) {
+    return table[input] ?? input
 }
 
-export function isAbsolutePath(s: string) {
-    return s && (s[0] === '/' || isWindowsDrive(s.slice(0,2)))
+// return true if same size or larger
+export function useBreakpoint(breakpoint: Breakpoint) {
+    return useMediaQuery((theme: any) => theme.breakpoints.up(breakpoint), { noSsr:true }) // without noSsr, first execution always returns false
 }
 
-export function pathJoin(...args: any[]) {
-    const delimiter = findFirst(args, x => /\\|\//.exec('\\a/b')?.[0])
-    const good = onlyTruthy(args.map(x => x == null ? '' : String(x)))
-    return good.map((x, i) => i === good.length-1 || x.endsWith('\\') || x.endsWith('/') ? x : x + delimiter)
-        .join('')
+export function err2msg(code: string) {
+    return {
+        ENOENT: "Not found",
+        ENOTDIR: "Not a folder",
+    }[code] || code
 }
 
-export function findFirst<I=any, O=any>(a: I[], cb:(v:I)=>O): any {
-    for (const x of a) {
-        const ret = cb(x)
-        if (ret !== undefined)
-            return ret
-    }
+export function reloadBtn(onClick: any, props?: any) {
+    return h(IconBtn, { icon: Refresh, title: "Reload", onClick, ...props })
+}
+
+const isMac = navigator.platform.match('Mac')
+export function isCtrlKey(ev: React.KeyboardEvent) {
+    return (ev.ctrlKey || isMac && ev.metaKey) && ev.key
+}
+
+export function IconProgress({ icon, progress, sx }: { icon: SvgIconComponent, progress: number, sx?: SxProps }) {
+    return h(Fragment, {},
+        h(icon, { sx: { position:'absolute', ml: '4px' } }),
+        h(Tooltip, {
+            title: formatPerc(progress),
+            children: h(CircularProgress, {
+                value: progress*100,
+                variant: 'determinate',
+                size: 32,
+                sx,
+            }),
+        }),
+    )
+}
+
+export function Flex({ gap='.8em', vert=false, children=null, props={}, ...rest }) {
+    return h(Box, {
+        sx: {
+            display: 'flex',
+            gap,
+            flexDirection: vert ? 'column' : undefined,
+            ...rest,
+        },
+        ...props
+    }, children)
+}
+
+
+export const REPO_URL = 'https://github.com/rejetto/hfs/'
+export const WIKI_URL = REPO_URL + '/wiki/'
+
+export function wikiLink(uri: string, content: ReactNode) {
+    if (Array.isArray(content))
+        content = dontBotherWithKeys(content)
+    return h(Link, { href: WIKI_URL + uri, target: 'help' }, content)
 }
